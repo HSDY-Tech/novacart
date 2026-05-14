@@ -31,3 +31,63 @@ body { @apply bg-background text-foreground antialiased; font-family: var(--font
 /* Chat bubbles */
 .chat-bubble-user { background: linear-gradient(135deg, #6366f1, #8b5cf6); }
 .chat-bubble-ai { @apply bg-white border border-border; }
+
+
+/* ===== ADD THIS AT THE BOTTOM OF YOUR globals.css ===== */
+
+/* Toast notification animation */
+@keyframes slideInFromTop {
+  0% {
+    opacity: 0;
+    transform: translateY(-20px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.slide-in-from-top-2 {
+  animation: slideInFromTop 0.3s ease-out;
+}
+
+/* Pulse animation for floating button */
+@keyframes pulse2 {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+.animate-pulse2 {
+  animation: pulse2 1.5s ease-in-out infinite;
+}
+
+/* Bounce animation for typing indicator */
+@keyframes bounce {
+  0%, 60%, 100% {
+    transform: translateY(0);
+  }
+  30% {
+    transform: translateY(-4px);
+  }
+}
+
+.animate-bounce {
+  animation: bounce 0.8s ease-in-out infinite;
+}
+
+/* Shadow utilities (if not already defined) */
+.shadow-soft {
+  box-shadow: 0 2px 20px -4px rgba(0, 0, 0, 0.12);
+}
+
+.shadow-card {
+  box-shadow: 0 4px 32px -8px rgba(0, 0, 0, 0.16);
+}
+
+.shadow-glow {
+  box-shadow: 0 8px 32px -8px rgba(99, 102, 241, 0.5);
+}
