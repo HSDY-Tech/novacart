@@ -1,7 +1,8 @@
 import { useState, useCallback } from "react";
 import type { Product } from "@/types/product";
-import { useCartStore } from "@/store/cart-store";
+import { useCartStore, getCartTotals } from "@/store/cart-store";
 import { validateAndFixEmail, validatePhone } from "@/lib/cart-utils";
+import { formatCurrency } from "@/utils/format";
 
 export type OrderStep = "idle" | "name" | "email" | "email_confirm" | "phone" | "address_street" | "address_city" | "address_zip" | "promo" | "confirm";
 
@@ -29,10 +30,8 @@ export function useOrderFlow() {
     name: "", email: "", phone: "", address: { street: "", city: "", zip: "" }
   });
   const [pendingEmail, setPendingEmail] = useState<PendingEmail | null>(null);
-  const [productForCheckout, setProductForCheckout] = useState<Product | null>(null);
   
-  const startCheckout = useCallback((product?: Product) => {
-    setProductForCheckout(product || null);
+  const startCheckout = useCallback(() => {
     setIsActive(true);
     setStep("name");
     return "Let's place your order! What's your full name?";
@@ -128,7 +127,7 @@ export function useOrderFlow() {
         
         const finalData = { ...orderData, promoCode };
         
-        // Calculate totals
+        // Calculate totals from actual cart
         const items = useCartStore.getState().items;
         const subtotal = items.reduce((sum, i) => sum + i.product.price * i.quantity, 0);
         let discount = 0;
@@ -139,15 +138,15 @@ export function useOrderFlow() {
         const tax = (subtotal - discount) * 0.08;
         const total = subtotal - discount + tax;
         
-        const itemLines = items.map(i => `• ${i.product.title} × ${i.quantity} = $${(i.product.price * i.quantity).toFixed(2)}`).join("\n");
+        const itemLines = items.map(i => `${i.product.title} × ${i.quantity} = ${formatCurrency(i.product.price * i.quantity)}`).join("\n");
         
         const summary = `✅ **ORDER SUMMARY**
 
 ${itemLines}
 
-**Subtotal:** $${subtotal.toFixed(2)}
-${promoCode ? `**Discount:** -$${discount.toFixed(2)} (${promoCode})\n` : ""}**Tax (8%):** $${tax.toFixed(2)}
-**Total:** $${total.toFixed(2)}
+**Subtotal:** ${formatCurrency(subtotal)}
+${promoCode ? `**Discount:** -${formatCurrency(discount)} (${promoCode})\n` : ""}**Tax (8%):** ${formatCurrency(tax)}
+**Total:** ${formatCurrency(total)}
 
 **Customer:** ${finalData.name}
 **Email:** ${finalData.email}
@@ -162,27 +161,39 @@ Reply **"confirm"** to place your order, or **"cancel"** to abort.`;
       case "confirm":
         if (userMessage.toLowerCase() === "confirm") {
           const orderNumber = `NOVA-${Math.floor(Math.random() * 900000) + 100000}`;
+          const items = useCartStore.getState().items;
+          const subtotal = items.reduce((sum, i) => sum + i.product.price * i.quantity, 0);
+          let discount = 0;
+          if (orderData.promoCode === "NOVA10") discount = subtotal * 0.1;
+          else if (orderData.promoCode === "SAVE20") discount = Math.min(subtotal * 0.2, 50);
+          else if (orderData.promoCode === "NOVA50" && subtotal >= 100) discount = 50;
+          else if (orderData.promoCode === "WELCOME") discount = subtotal * 0.15;
+          const tax = (subtotal - discount) * 0.08;
+          const total = subtotal - discount + tax;
+          
           useCartStore.getState().clear();
           setIsActive(false);
           setStep("idle");
+          
+          const itemList = items.map(i => `• ${i.product.title} × ${i.quantity}`).join("\n");
+          
           return { 
             response: `🎉 **ORDER PLACED SUCCESSFULLY!**
 
 **Order #:** ${orderNumber}
-**Total:** $${(orderData.promoCode ? (() => {
-              const subtotal = useCartStore.getState().items.reduce((s,i) => s + i.product.price * i.quantity, 0);
-              let d = 0;
-              if (orderData.promoCode === "NOVA10") d = subtotal * 0.1;
-              else if (orderData.promoCode === "SAVE20") d = Math.min(subtotal * 0.2, 50);
-              else if (orderData.promoCode === "NOVA50" && subtotal >= 100) d = 50;
-              else if (orderData.promoCode === "WELCOME") d = subtotal * 0.15;
-              return (subtotal - d) * 1.08;
-            })() : 0).toFixed(2)}
-**Delivery:** ${orderData.address.street}, ${orderData.address.city}
+
+**Items:**
+${itemList}
+${orderData.promoCode ? `**Promo:** ${orderData.promoCode} applied ✓` : ""}
+
+**Total:** ${formatCurrency(total)}
+**Delivery:** ${orderData.address.street}, ${orderData.address.city}, ${orderData.address.zip}
 
 A confirmation email has been sent to ${orderData.email}.
 
-Thank you for shopping with NovaCart! 🚀`,
+Thank you for shopping with NovaCart! 🚀
+
+Tip: Track your order — say "track ${orderNumber}"`,
             shouldClose: true
           };
         } else if (userMessage.toLowerCase() === "cancel") {

@@ -4,7 +4,7 @@ import { formatCurrency } from "@/utils/format";
 export function formatCartForChat(): string {
   const items = useCartStore.getState().items;
   if (items.length === 0) {
-    return "Your cart is empty. Add some products first!";
+    return "🛒 Your cart is empty. Add some products first!";
   }
   
   const totals = getCartTotals(items);
@@ -23,7 +23,6 @@ export function formatCartForChat(): string {
 }
 
 export function extractProductFromMessage(message: string): string | null {
-  // Match patterns like "add X to cart", "buy X", "I want X"
   const patterns = [
     /add (.+?) to cart/i,
     /buy (.+?)(?: to cart)?$/i,
@@ -51,7 +50,8 @@ export function validateAndFixEmail(email: string): { valid: boolean; corrected?
     'hotmal.com': 'hotmail.com',
     'yaho.com': 'yahoo.com',
     'outlok.com': 'outlook.com',
-    'gnail.com': 'gmail.com'
+    'gnail.com': 'gmail.com',
+    'gmali.com': 'gmail.com'
   };
   
   const parts = email.split('@');

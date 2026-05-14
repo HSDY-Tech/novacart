@@ -9,7 +9,9 @@ import { getProductById } from "@/data/products";
 import { formatCurrency } from "@/utils/format";
 import { cn } from "@/lib/utils";
 import type { Product } from "@/types/product";
-
+import { useCartStore } from "@/store/cart-store";
+import { formatCartForChat, extractProductFromMessage, extractRemoveItem } from "@/lib/cart-utils";
+import { useOrderFlow } from "@/hooks/useOrderFlow";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 type Role = "user" | "assistant";
@@ -25,29 +27,14 @@ type Message = {
 
 type ApiMessage = { role: Role; content: string };
 
-// Order collection types
-type OrderStep = "idle" | "name" | "email" | "phone" | "address" | "confirm";
-
-type OrderData = {
-  name: string;
-  email: string;
-  phone: string;
-  address: string;
-  productId: string;
-  productName: string;
-  productPrice: number;
-};
-
 // ─── Toast notification system ────────────────────────────────────────────────
 let toastTimeout: NodeJS.Timeout | null = null;
 
 const showToast = (message: string, type: "success" | "error" | "info" = "success") => {
-  // Remove existing toast
   const existingToast = document.getElementById("nova-toast");
   if (existingToast) existingToast.remove();
   if (toastTimeout) clearTimeout(toastTimeout);
 
-  // Create toast element
   const toast = document.createElement("div");
   toast.id = "nova-toast";
   toast.className = `fixed top-20 right-4 z-[100] flex items-center gap-3 rounded-xl px-4 py-3 shadow-lg animate-in slide-in-from-top-2 ${
@@ -59,7 +46,6 @@ const showToast = (message: string, type: "success" | "error" | "info" = "succes
   
   document.body.appendChild(toast);
   
-  // Auto remove after 3 seconds
   toastTimeout = setTimeout(() => {
     toast.remove();
   }, 3000);
@@ -78,12 +64,9 @@ const mkWelcome = (): Message => ({
 const uid = () => crypto.randomUUID();
 const fmt = (d: Date) => d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
-// Add to cart function
 const addToCart = (product: Product) => {
-  import("@/store/cart-store").then(({ useCartStore }) => {
-    useCartStore.getState().addItem(product);
-    showToast(`✓ Added ${product.title} to cart! 🛒`, "success");
-  });
+  useCartStore.getState().addItem(product);
+  showToast(`✓ Added ${product.title} to cart! 🛒`, "success");
 };
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -96,13 +79,12 @@ export function ChatbotWidget() {
   const inputRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   
-  // Order collection state
-  const [isCollectingOrder, setIsCollectingOrder] = useState(false);
-  const [orderStep, setOrderStep] = useState<OrderStep>("idle");
-  const [orderData, setOrderData] = useState<OrderData>({
-    name: "", email: "", phone: "", address: "",
-    productId: "", productName: "", productPrice: 0
-  });
+  // Order flow from hook
+  const { isActive: isOrderActive, startCheckout, processResponse } = useOrderFlow();
+  
+  // Pending confirmation states
+  const [pendingAddProduct, setPendingAddProduct] = useState<Product | null>(null);
+  const [pendingClearCart, setPendingClearCart] = useState(false);
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -114,155 +96,12 @@ export function ChatbotWidget() {
     if (open) setTimeout(() => inputRef.current?.focus(), 150);
   }, [open]);
 
-  // Handle order collection responses
-  const handleOrderResponse = useCallback(async (userMessage: string): Promise<string | null> => {
-    const step = orderStep;
-    
-    switch (step) {
-      case "name":
-        setOrderData(prev => ({ ...prev, name: userMessage }));
-        setOrderStep("email");
-        return `Thanks ${userMessage}! What's your email address for order confirmation?`;
-        
-      case "email":
-        if (!userMessage.includes("@") || !userMessage.includes(".")) {
-          return "Please enter a valid email address (e.g., name@example.com)";
-        }
-        setOrderData(prev => ({ ...prev, email: userMessage }));
-        setOrderStep("phone");
-        return "Perfect! What's your phone number for delivery updates?";
-        
-      case "phone":
-        const digits = userMessage.replace(/[^0-9]/g, "");
-        if (digits.length < 10) {
-          return "Please enter a valid 10-digit phone number";
-        }
-        setOrderData(prev => ({ ...prev, phone: userMessage }));
-        setOrderStep("address");
-        return "Last step — what's your delivery address (street, city, zip code)?";
-        
-      case "address":
-        setOrderData(prev => ({ ...prev, address: userMessage }));
-        setOrderStep("confirm");
-        const data = { ...orderData, address: userMessage };
-        return `✅ **ORDER SUMMARY**
-        
-Product: ${data.productName}
-Price: $${data.productPrice}
-Customer: ${data.name}
-Email: ${data.email}
-Phone: ${data.phone}
-Address: ${userMessage}
-Total: $${data.productPrice}
-
-Reply **"confirm"** to place your order, or **"cancel"** to abort.`;
-        
-      case "confirm":
-        if (userMessage.toLowerCase() === "confirm") {
-          const orderNumber = `NOVA-${Math.floor(Math.random() * 900000) + 100000}`;
-          showToast(`🎉 Order confirmed! ${orderNumber}`, "success");
-          
-          const product = getProductById(orderData.productId);
-          if (product) {
-            addToCart(product);
-          }
-          
-          setIsCollectingOrder(false);
-          setOrderStep("idle");
-          const confirmedData = { ...orderData };
-          setOrderData({ name: "", email: "", phone: "", address: "", productId: "", productName: "", productPrice: 0 });
-          
-          return `🎉 **ORDER PLACED SUCCESSFULLY!**
-
-**Order #:** ${orderNumber}
-**Product:** ${confirmedData.productName}
-**Total:** $${confirmedData.productPrice}
-**Delivery Address:** ${confirmedData.address}
-
-We'll deliver within 3-5 business days. A confirmation email has been sent to ${confirmedData.email}.
-
-Thank you for shopping with NovaCart! 🚀
-
-Would you like to continue shopping?`;
-        } else if (userMessage.toLowerCase() === "cancel") {
-          setIsCollectingOrder(false);
-          setOrderStep("idle");
-          return "Order cancelled. Type 'checkout' when you're ready to try again.";
-        }
-        return 'Please reply "confirm" to place your order or "cancel" to abort.';
-        
-      default:
-        return null;
-    }
-  }, [orderStep, orderData]);
-
   // ── Build API payload from message history ──────────────────────────────────
   const buildHistory = useCallback((msgs: Message[]): ApiMessage[] => {
     return msgs
       .filter(m => m.id !== "welcome" && !m.error)
       .map(m => ({ role: m.role, content: m.content }));
   }, []);
-
-  // ── Send message ─────────────────────────────────────────────────────────────
-  const sendMessage = useCallback(async (text: string) => {
-    const q = text.trim();
-    if (!q || loading) return;
-
-    setInput("");
-
-    // Check if we're collecting order info
-    if (isCollectingOrder) {
-      const orderResponse = await handleOrderResponse(q);
-      if (orderResponse) {
-        setMessages(prev => [...prev, {
-          id: uid(), role: "assistant", content: orderResponse,
-          productIds: [], ts: new Date()
-        }]);
-      }
-      return;
-    }
-
-    // Check for checkout intent
-    const checkoutKeywords = ['checkout', 'buy now', 'purchase', 'place order', 'order this', 'buy this'];
-    if (checkoutKeywords.some(kw => q.toLowerCase().includes(kw))) {
-      // Find the last product mentioned in messages
-      const lastProductIds = [...messages].reverse().flatMap(m => m.productIds || []);
-      const lastProduct = lastProductIds.length ? getProductById(lastProductIds[0]) : null;
-      
-      if (lastProduct) {
-        setIsCollectingOrder(true);
-        setOrderStep("name");
-        setOrderData({
-          ...orderData,
-          productId: lastProduct.id,
-          productName: lastProduct.title,
-          productPrice: lastProduct.price
-        });
-        
-        const response = `Awesome! Let's place your order for **${lastProduct.title}**. What's your full name?`;
-        setMessages(prev => [...prev, {
-          id: uid(), role: "assistant", content: response,
-          productIds: [], ts: new Date()
-        }]);
-        return;
-      } else {
-        setMessages(prev => [...prev, {
-          id: uid(), role: "assistant",
-          content: "Please ask about a product first, then I can help you checkout! For example: 'Show me Wireless Gaming Headphones'",
-          productIds: [], ts: new Date()
-        }]);
-        return;
-      }
-    }
-
-    // Add user message to state
-    const userMsg: Message = { id: uid(), role: "user", content: q, ts: new Date() };
-    setMessages(prev => {
-      const next = [...prev, userMsg];
-      triggerAPI(next);
-      return next;
-    });
-  }, [loading, isCollectingOrder, messages, handleOrderResponse, orderData]);
 
   // ── Trigger API with current message list ────────────────────────────────────
   const triggerAPI = useCallback(async (currentMessages: Message[]) => {
@@ -309,6 +148,173 @@ Would you like to continue shopping?`;
     }
   }, [buildHistory]);
 
+  // ── Send message ─────────────────────────────────────────────────────────────
+  const sendMessage = useCallback(async (text: string) => {
+    const q = text.trim();
+    if (!q || loading) return;
+
+    setInput("");
+
+    // Handle order flow if active
+    if (isOrderActive) {
+      const { response } = processResponse(q);
+      setMessages(prev => [...prev, {
+        id: uid(), role: "assistant", content: response,
+        productIds: [], ts: new Date()
+      }]);
+      return;
+    }
+
+    // Handle "show cart" command
+    if (q.toLowerCase().match(/show (my )?cart|view cart|what'?s in my cart/i)) {
+      const cartMessage = formatCartForChat();
+      setMessages(prev => [...prev, {
+        id: uid(), role: "assistant", content: cartMessage,
+        productIds: [], ts: new Date()
+      }]);
+      return;
+    }
+
+    // Handle "clear cart" command
+    if (q.toLowerCase().match(/clear cart|empty cart/i)) {
+      setPendingClearCart(true);
+      setMessages(prev => [...prev, {
+        id: uid(), role: "assistant",
+        content: "Are you sure you want to remove all items from your cart? Reply 'yes' to confirm or 'no' to cancel.",
+        productIds: [], ts: new Date()
+      }]);
+      return;
+    }
+
+    // Handle "remove [product]" command
+    const removeItem = extractRemoveItem(q);
+    if (removeItem) {
+      const items = useCartStore.getState().items;
+      const itemToRemove = items.find(i => 
+        i.product.title.toLowerCase().includes(removeItem.toLowerCase())
+      );
+      if (itemToRemove) {
+        useCartStore.getState().removeItem(itemToRemove.product.id);
+        setMessages(prev => [...prev, {
+          id: uid(), role: "assistant",
+          content: `🗑️ Removed ${itemToRemove.product.title} from your cart. Say "show my cart" to see updated cart.`,
+          productIds: [], ts: new Date()
+        }]);
+      } else {
+        setMessages(prev => [...prev, {
+          id: uid(), role: "assistant",
+          content: `Couldn't find "${removeItem}" in your cart. Say "show my cart" to see what's there.`,
+          productIds: [], ts: new Date()
+        }]);
+      }
+      return;
+    }
+
+    // Handle checkout command
+    if (q.toLowerCase().match(/checkout|place order|buy now|purchase/i)) {
+      const items = useCartStore.getState().items;
+      if (items.length === 0) {
+        setMessages(prev => [...prev, {
+          id: uid(), role: "assistant",
+          content: "Your cart is empty. Add some products first using 'add [product] to cart'!",
+          productIds: [], ts: new Date()
+        }]);
+        return;
+      }
+      const response = startCheckout();
+      setMessages(prev => [...prev, {
+        id: uid(), role: "assistant", content: response,
+        productIds: [], ts: new Date()
+      }]);
+      return;
+    }
+
+    // Handle "yes" confirmation for add to cart
+    if (q.toLowerCase() === "yes" && pendingAddProduct) {
+      useCartStore.getState().addItem(pendingAddProduct);
+      setMessages(prev => [...prev, {
+        id: uid(), role: "assistant",
+        content: `✅ Added ${pendingAddProduct.title} to your cart! Say "show my cart" to review or "checkout" to order.`,
+        productIds: [pendingAddProduct.id], ts: new Date()
+      }]);
+      setPendingAddProduct(null);
+      return;
+    }
+
+    if (q.toLowerCase() === "no" && pendingAddProduct) {
+      setMessages(prev => [...prev, {
+        id: uid(), role: "assistant",
+        content: `Ok, I won't add ${pendingAddProduct.title} to your cart. Anything else I can help with?`,
+        productIds: [], ts: new Date()
+      }]);
+      setPendingAddProduct(null);
+      return;
+    }
+
+    // Handle "yes" for clear cart
+    if (q.toLowerCase() === "yes" && pendingClearCart) {
+      useCartStore.getState().clear();
+      setMessages(prev => [...prev, {
+        id: uid(), role: "assistant",
+        content: "🛒 Your cart is now empty. Ready to add new items!",
+        productIds: [], ts: new Date()
+      }]);
+      setPendingClearCart(false);
+      return;
+    }
+
+    if (q.toLowerCase() === "no" && pendingClearCart) {
+      setMessages(prev => [...prev, {
+        id: uid(), role: "assistant",
+        content: "Cart unchanged. Say 'show my cart' to see your items.",
+        productIds: [], ts: new Date()
+      }]);
+      setPendingClearCart(false);
+      return;
+    }
+
+    // Handle "add to cart" with confirmation for implicit intent
+    const productQuery = extractProductFromMessage(q);
+    if (productQuery) {
+      const { searchProducts } = await import("@/ai/product-search");
+      const results = searchProducts(productQuery, { limit: 1 });
+      if (results.length > 0) {
+        const product = results[0];
+        const isExplicit = q.toLowerCase().match(/^(add|buy|purchase) /);
+        if (isExplicit) {
+          useCartStore.getState().addItem(product);
+          setMessages(prev => [...prev, {
+            id: uid(), role: "assistant",
+            content: `✅ Added ${product.title} ($${product.price}) to your cart!\n\nSay "show my cart" to review or "checkout" to order!`,
+            productIds: [product.id], ts: new Date()
+          }]);
+        } else {
+          setPendingAddProduct(product);
+          setMessages(prev => [...prev, {
+            id: uid(), role: "assistant",
+            content: `Got it! Just to confirm — you want to add **${product.title}** ($${product.price}) to your cart?\n\nReply 'yes' to add, 'no' to cancel.`,
+            productIds: [product.id], ts: new Date()
+          }]);
+        }
+      } else {
+        setMessages(prev => [...prev, {
+          id: uid(), role: "assistant",
+          content: `I couldn't find "${productQuery}" in our catalog. Try headphones, laptops, smartphones, or accessories!`,
+          productIds: [], ts: new Date()
+        }]);
+      }
+      return;
+    }
+
+    // Default: send to AI API
+    const userMsg: Message = { id: uid(), role: "user", content: q, ts: new Date() };
+    setMessages(prev => {
+      const next = [...prev, userMsg];
+      triggerAPI(next);
+      return next;
+    });
+  }, [loading, isOrderActive, processResponse, startCheckout, pendingAddProduct, pendingClearCart, triggerAPI]);
+
   // ── Handlers ──────────────────────────────────────────────────────────────────
   const handleSubmit = (e: FormEvent) => { e.preventDefault(); void sendMessage(input); };
   const handleKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
@@ -318,10 +324,10 @@ Would you like to continue shopping?`;
   const handleReset = () => {
     abortRef.current?.abort();
     setLoading(false);
-    setIsCollectingOrder(false);
-    setOrderStep("idle");
     setMessages([mkWelcome()]);
     setInput("");
+    setPendingAddProduct(null);
+    setPendingClearCart(false);
     showToast("✨ New conversation started", "info");
   };
 
@@ -330,7 +336,6 @@ Would you like to continue shopping?`;
   // ─── Render ───────────────────────────────────────────────────────────────────
   return (
     <>
-      {/* Add CSS animation styles */}
       <style jsx global>{`
         @keyframes slideInFromTop {
           from { opacity: 0; transform: translateY(-20px); }
@@ -339,7 +344,6 @@ Would you like to continue shopping?`;
         .animate-in { animation: slideInFromTop 0.3s ease-out; }
       `}</style>
 
-      {/* ── Chat panel ── */}
       <AnimatePresence>
         {open && (
           <motion.div
@@ -389,7 +393,6 @@ Would you like to continue shopping?`;
                 }} />
               ))}
 
-              {/* Typing indicator */}
               {loading && (
                 <div className="flex items-end gap-2">
                   <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 to-violet-500">
@@ -404,24 +407,11 @@ Would you like to continue shopping?`;
                   </div>
                 </div>
               )}
-
               <div ref={bottomRef} />
             </div>
 
-            {/* Order progress indicator */}
-            {isCollectingOrder && (
-              <div className="shrink-0 border-t border-border/50 bg-amber-50 px-4 py-2">
-                <p className="text-xs font-medium text-amber-700">
-                  📝 Order in progress — {orderStep === "name" ? "Step 1/5: Name" :
-                     orderStep === "email" ? "Step 2/5: Email" :
-                     orderStep === "phone" ? "Step 3/5: Phone" :
-                     orderStep === "address" ? "Step 4/5: Address" : "Step 5/5: Confirm"}
-                </p>
-              </div>
-            )}
-
             {/* Quick prompts */}
-            {messages.length <= 1 && !loading && !isCollectingOrder && (
+            {messages.length <= 1 && !loading && (
               <div className="shrink-0 border-t border-border/50 bg-white px-4 py-2.5">
                 <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Try asking</p>
                 <div className="flex flex-wrap gap-1.5">
@@ -452,7 +442,7 @@ Would you like to continue shopping?`;
                   value={input}
                   onChange={e => setInput(e.target.value)}
                   onKeyDown={handleKeyDown}
-                  placeholder={isCollectingOrder ? "Type your response..." : "Ask Alex about products..."}
+                  placeholder="Ask Alex about products..."
                   disabled={loading}
                   className="flex-1 rounded-full bg-slate-100 px-4 py-2.5 text-sm outline-none transition placeholder:text-muted-foreground focus:bg-white focus:ring-2 focus:ring-indigo-200 disabled:opacity-50"
                 />
@@ -465,14 +455,14 @@ Would you like to continue shopping?`;
                 </button>
               </form>
               <p className="mt-1.5 text-center text-[10px] text-muted-foreground">
-                Powered by Groq · Gemini · Alex AI
+                Powered by Groq · NovaCart AI
               </p>
             </div>
           </motion.div>
         )}
       </AnimatePresence>
 
-      {/* ── Floating trigger button ── */}
+      {/* Floating trigger button */}
       <motion.button
         whileHover={{ scale: 1.06 }}
         whileTap={{ scale: 0.94 }}
@@ -508,7 +498,6 @@ function MessageBubble({ msg, onAddToCart }: { msg: Message; onAddToCart: () => 
 
   return (
     <div className={cn("flex items-end gap-2", isUser ? "flex-row-reverse" : "flex-row")}>
-      {/* Avatar */}
       {!isUser && (
         <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 to-violet-500">
           <Bot className="h-3.5 w-3.5 text-white" />
@@ -516,7 +505,6 @@ function MessageBubble({ msg, onAddToCart }: { msg: Message; onAddToCart: () => 
       )}
 
       <div className={cn("flex max-w-[82%] flex-col gap-2", isUser ? "items-end" : "items-start")}>
-        {/* Text bubble */}
         <div className={cn(
           "relative rounded-2xl px-4 py-2.5 text-sm leading-relaxed shadow-sm",
           isUser
@@ -532,7 +520,6 @@ function MessageBubble({ msg, onAddToCart }: { msg: Message; onAddToCart: () => 
           </p>
         </div>
 
-        {/* Product cards with Add to Cart button */}
         {prods.length > 0 && (
           <div className="w-full space-y-2">
             {prods.map(p => (
@@ -547,7 +534,6 @@ function MessageBubble({ msg, onAddToCart }: { msg: Message; onAddToCart: () => 
           </div>
         )}
 
-        {/* Timestamp */}
         <p className="px-1 text-[10px] text-muted-foreground">{fmt(msg.ts)}</p>
       </div>
     </div>
